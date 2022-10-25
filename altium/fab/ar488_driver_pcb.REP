@@ -1,0 +1,109 @@
+*************************************************************
+FileName = ar488_driver_pcb.GBR
+AutoAperture = True
+*************************************************************
+Generating : Bottom Layer
+      File : ar488_driver_pcb.GBL
+
+    Adding Layer      : Bottom Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D15
+    D16
+    D17
+    D18
+    D19
+    D20
+    D21
+    D22
+*************************************************************
+
+*************************************************************
+Generating : Top Solder
+      File : ar488_driver_pcb.GTS
+
+    Adding Layer      : Top Solder
+
+    Adding Layer      : Top Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D11
+    D12
+    D13
+    D14
+*************************************************************
+
+*************************************************************
+Generating : Top Layer
+      File : ar488_driver_pcb.GTL
+
+    Adding Layer      : Top Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D15
+    D16
+    D17
+    D18
+    D19
+    D20
+    D21
+*************************************************************
+
+*************************************************************
+Generating : Bottom Solder
+      File : ar488_driver_pcb.GBS
+
+    Adding Layer      : Bottom Solder
+
+    Adding Layer      : Bottom Layer
+
+    Adding Layer      : Multi-Layer
+
+
+Used DCodes :
+    D11
+    D12
+    D13
+    D14
+*************************************************************
+
+*************************************************************
+Generating : Top Overlay
+      File : ar488_driver_pcb.GTO
+
+    Adding Layer      : Top Overlay
+
+
+Used DCodes :
+    D10
+*************************************************************
+
+*************************************************************
+Generating : Bottom Overlay
+      File : ar488_driver_pcb.GBO
+
+    Adding Layer      : Bottom Overlay
+
+
+Used DCodes :
+    D23
+*************************************************************
+
+*************************************************************
+Generating : Profile
+      File : ar488_driver_pcb.GM
+
+
+Used DCodes :
+    D24
+*************************************************************
+
