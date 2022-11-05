@@ -23,7 +23,7 @@
 */
 
 
-/***** FWVER "AR488 GPIB controller, ver. 0.51.09, 20/06/2022" *****/
+/***** FWVER "AR488 GPIB controller, ver. 0.51.15, 12/10/2022" *****/
 /*
   Arduino IEEE-488 implementation by John Chajecki
 
@@ -255,7 +255,6 @@ static const char cmdHelp[] PROGMEM = {
   "srqauto:C Automatically condiuct serial poll when SRQ is asserted\n"
   "ton:C Put controller in talk-only mode (send data only)\n"
   "verbose:C Verbose (human readable) mode\n"
-  "tmbus:C Timing parameters (see the doc)\n"
   "xdiag:C Bus diagnostics (see the doc)\n"
 };
 
@@ -303,9 +302,6 @@ bool isQuery = false;               // Direct instrument command is a query
 uint8_t tranBrk = 0;                // Transmission break on 1=++, 2=EOI, 3=ATN 4=UNL
 uint8_t endByte = 0;                // Termination character
 
-// Device mode - send data
-//bool snd = false;
-
 // Escaped character flag
 bool isEsc = false;           // Charcter escaped
 bool isPlusEscaped = false;   // Plus escaped
@@ -314,20 +310,13 @@ bool isPlusEscaped = false;   // Plus escaped
 bool isRO = false;
 
 // Talk only mode flag
-bool isTO = false;
+uint8_t isTO = 0;
 
-// GPIB command parser
-bool aTt = false;
-bool aTl = false;
+bool isProm = false;
+
 
 // Data send mode flags
 bool dataBufferFull = false;    // Flag when parse buffer is full
-
-// Interrupt flag for MCP23S17
-//#if defined(AR488_MCP23S17) || defined(AR488_MCP23017)
-//extern volatile bool mcpIntA;  // MCP23S17 interrupt handler
-//uint8_t mcpPinAssertedReg = 0;
-//#endif
 
 // State flags set by interrupt being triggered
 //extern volatile bool isATN;  // has ATN been asserted?
@@ -380,41 +369,6 @@ void setup() {
 #endif
 
 
-  // Using MCP23S17 (SPI) expander chip
-#ifdef AR488_MCP23S17
-  // Enable SPI
-  SPI.begin();
-  // Optional: Clock divider (slow down the bus speed [optional])
-  SPI.setClockDivider(SPI_CLOCK_DIV8);
-  // Ensure the MCP select pin is set as an OUPTPUT and is HIGH
-  pinMode(MCP_SELECTPIN, OUTPUT);
-  digitalWrite(MCP_SELECTPIN, HIGH);
-  // Enable the hardware address pins (A0-A2) on the MCP23S17
-  mcpByteWrite(MCPCON, 0b00001000);
-  // Enable MCP23S17 interrupts
-  mcpInterruptsEn();
-  // Attach interrupt handler to Arduino board pin for MCP23S17 to signal interrupt has occurred
-//  attachInterrupt(digitalPinToInterrupt(MCP_INTERRUPT), mcpIntHandler, FALLING);
-#endif
-
-
-  // Using MCP23017 (I2C) expander chip
-#ifdef AR488_MCP23017
-  // Start I2C
-  Wire.begin();
-  // OPtional: Set the I2C bus clock frequency in Hertz (optional - 10000 [slow], 100000 [standard], 400000 [fast], 3400000 [fast plus])
-  // Check processor documentation for which modes are supported
-//  Wire.setClock(100000);
-//  digitalWrite(MCP_SELECTPIN, HIGH);
-  // Enable the hardware address pins (A0-A2) on the MCP23017
-  mcpByteWrite(MCPCON, 0b00001000);
-  // Enable MCP23017 interrupts
-  mcpInterruptsEn();
-  // Attach interrupt handler to Arduino board pin for MCP23S17 to signal interrupt has occurred
-//  attachInterrupt(digitalPinToInterrupt(MCP_INTERRUPT), mcpIntHandler, FALLING);
-#endif
-  
-  
   // Using AVR board with PCINT interrupts
 /*
 #ifdef USE_INTERRUPTS
@@ -445,6 +399,48 @@ void setup() {
 #endif
 
 
+  // Using MCP23S17 (SPI) expander chip
+#ifdef AR488_MCP23S17
+//Serial.println(F("Starting SPI..."));
+  // Enable SPI
+  SPI.begin();
+  // Optional: Clock divider (slow down the bus speed [optional])
+  SPI.setClockDivider(SPI_CLOCK_DIV8);
+  // Ensure the MCP select pin is set as an OUPTPUT and is HIGH
+  pinMode(MCP_SELECTPIN, OUTPUT);
+  digitalWrite(MCP_SELECTPIN, HIGH);
+  // Set expander configuration register
+  // (Bit 1=0 sets active low for Int A)
+  // (Bit 3=1 enables hardware address pins (MCP23S17 only)
+  // (Bit 7=0 sets registers to be in same bank)
+  mcpByteWrite(MCPCON, 0b00001000);
+  // Enable MCP23S17 interrupts
+  mcpInterruptsEn();
+    // Attach interrupt handler to Arduino board pin for MCP23S17 to signal interrupt has occurred
+    attachInterrupt(digitalPinToInterrupt(MCP_INTERRUPT), mcpIntHandler, FALLING);
+//Serial.println(F("SPI started."));
+#endif
+
+
+  // Using MCP23017 (I2C) expander chip
+#ifdef AR488_MCP23017
+  // Start I2C
+  Wire.begin();
+  // OPtional: Set the I2C bus clock frequency in Hertz (optional - 10000 [slow], 100000 [standard], 400000 [fast], 3400000 [fast plus])
+  // Check processor documentation for which modes are supported
+//  Wire.setClock(100000);
+
+  // Set expander configuration register
+  // (Bit 1=0 sets active low for Int A)
+  // (Bit 3 is not relevant for the 23017)
+  // (Bit 7=0 sets registers to be in same bank)
+  mcpByteWrite(MCPCON, 0b00000000);
+
+  // Enable MCP23017 interrupts
+  mcpInterruptsEn();
+  // Attach interrupt handler to Arduino board pin for MCP23S17 to signal interrupt has occurred
+  attachInterrupt(digitalPinToInterrupt(MCP_INTERRUPT), mcpIntHandler, FALLING);
+#endif
 
 
 // Un-comment for diagnostic purposes
@@ -564,7 +560,7 @@ void loop() {
 
 /*
 if (lnRdy>0){
-  dataPort.print(F("lnRdy: "));
+  dataPort.print(F("lnRdy1: "));
   dataPort.println(lnRdy);
 }
 */
@@ -597,15 +593,7 @@ if (lnRdy>0){
       }
     }
 
-    // Check status of SRQ and SPOLL if asserted
-//    if (isSRQ && isSrqa) {
-/*
-    if (gpibBus.isAsserted(SRQ) && isSrqa) {
-      spoll_h(NULL);
-//      isSRQ = false;
-    }
-*/
-    // Automatic serial poll?
+    // Automatic serial poll (check status of SRQ and SPOLL if asserted)?
     if (isSrqa) {
       if (gpibBus.isAsserted(SRQ)) spoll_h(NULL);
     }
@@ -634,8 +622,9 @@ if (lnRdy>0){
 
   // Device mode:
   if (gpibBus.isController()==false) {
-    if (isTO) {
-      if (lnRdy == 2) sendToInstrument(pBuf, pbPtr);
+    if (isTO>0) {
+//      if (lnRdy == 2) sendToInstrument(pBuf, pbPtr);
+      tonMode();
     }else if (isRO) {
       lonMode();
     }else if (gpibBus.isAsserted(ATN)) {
@@ -643,6 +632,12 @@ if (lnRdy>0){
       attnRequired();
 //      dataPort.println(F("ATN loop finished"));
     }
+
+    // Can't send in LON mode so just clear the buffer
+    if (isProm) {
+      if (lnRdy == 2) flushPbuf();
+    }
+      
 /*    
     else{
       if (lnRdy == 2) sendToInstrument(pBuf, pbPtr);
@@ -659,6 +654,13 @@ if (lnRdy>0){
     if (gpibBus.cfg.idn==2) {dataPort.print(gpibBus.cfg.sname);dataPort.print("-");dataPort.println(gpibBus.cfg.serial);}
     sendIdn = false;
   }
+
+/*
+if (lnRdy>0){
+  dataPort.print(F("lnRdy2: "));
+  dataPort.println(lnRdy);
+}
+*/
 
   // If charaters waiting in the serial input buffer then call handler
   if (dataPort.available()) lnRdy = serialIn_h();
@@ -716,37 +718,6 @@ uint8_t serialIn_h() {
   return bufferStatus;
 }
 
-
-/***** Detect pin state *****/
-/*
- * When interrupts are being used the pin state is automatically flagged 
- * when an interrupt is triggered. Where interrupts cannot be used, the
- * state of the pin is read.
- * 
- * Read pin state using digitalRead for Arduino pins or getGpibPinState
- * for MCP23S17 pins.
- */
-/* 
-bool isAsserted(uint8_t gpibsig) {
-#if defined(AR488_MCP23S17) || defined(AR488_MCP23017)
-  // Use MCP function to get MCP23S17 or MCP23017 pin state.
-  // If interrupt flagged then update mcpPinAssertedReg register
-  if (mcpIntA){
-//dataPort.println(F("Interrupt flagged - pin state checked"));
-    // Clear mcpIntA flag
-    mcpIntA = false;
-    // Get inverse of pin status at interrupt (0 = true [asserted]; 1 = false [unasserted])
-    mcpPinAssertedReg = ~getMcpIntAPinState();
-//dataPort.print(F("mcpPinAssertedReg: "));
-//dataPort.println(mcpPinAssertedReg, BIN);
-  }
-  return (mcpPinAssertedReg & (1<<gpibsig));
-#else
-  // Use digitalRead function to get current Arduino pin state
-  return (digitalRead(gpibsig) == LOW) ? true : false;
-#endif
-}
-*/
 
 /*************************************/
 /***** Device operation routines *****/
@@ -961,6 +932,7 @@ static cmdRec cmdHidx [] = {
   { "msa",         2, sendmsa_h   },
   { "mta",         2, (void(*)(char*)) sendmta_h },
   { "ppoll",       2, (void(*)(char*)) ppoll_h   },
+  { "prom",        1, prom_h      },
   { "read",        2, read_h      },
   { "read_tmo_ms", 2, rtmo_h      },
   { "ren",         2, ren_h       },
@@ -978,7 +950,6 @@ static cmdRec cmdHidx [] = {
   { "unt",         2, (void(*)(char*)) untalk_h    },
   { "ver",         3, ver_h       },
   { "verbose",     3, (void(*)(char*)) verb_h    },
-//  { "tmbus",       3, tmbus_h     },
   { "xdiag",       3, xdiag_h     }
 //  { "xonxoff",     3, xonxoff_h   }
 };
@@ -1592,7 +1563,7 @@ void spoll_h(char *params) {
   uint8_t r;
   //  uint8_t i = 0;
   uint8_t j = 0;
-  uint16_t val = 0;
+  uint16_t addrval = 0;
   bool all = false;
   bool eoiDetected = false;
 
@@ -1614,22 +1585,27 @@ void spoll_h(char *params) {
       } else {
         param = strtok(NULL, " \t");
       }
+      // No further parameters so exit 
+      if (!param) break;
+      
       // The 'all' parameter given?
       if (strncmp(param, "all", 3) == 0) {
         all = true;
         j = 30;
         if (isVerb) dataPort.println(F("Serial poll of all devices requested..."));
         break;
-        // Read all address parameters
-      } else if (strlen(params) < 3) { // No more than 2 characters
-        if (notInRange(param, 1, 30, val)) return;
-        addrs[j] = (uint8_t)val;
+      // Valid GPIB address parameter ?
+      } else if (strlen(param) < 3) { // No more than 2 characters
+        if (notInRange(param, 1, 30, addrval)) return;
+        addrs[j] = (uint8_t)addrval;
         j++;
+      // Other condition
       } else {
         errBadCmd();
         if (isVerb) dataPort.println(F("Invalid parameter"));
         return;
       }
+
     }
   }
 
@@ -1662,16 +1638,16 @@ void spoll_h(char *params) {
 
     // Set GPIB address in val
     if (all) {
-      val = i;
+      addrval = i;
     } else {
-      val = addrs[i];
+      addrval = addrs[i];
     }
 
     // Don't need to poll own address
-    if (val != gpibBus.cfg.caddr) {
+    if (addrval != gpibBus.cfg.caddr) {
 
       // Address a device to talk
-      if ( gpibBus.sendCmd(GC_TAD + val) )  {
+      if ( gpibBus.sendCmd(GC_TAD + addrval) )  {
 
 #ifdef DEBUG_SPOLL
         DB_PRINT(F("failed to send TAD"),"");
@@ -1687,11 +1663,12 @@ void spoll_h(char *params) {
 
       // If we successfully read a byte
       if (!r) {
-        if (j > 1) {
+        if (j == 30) {
           // If all, return specially formatted response: SRQ:addr,status
           // but only when RQS bit set
           if (sb & 0x40) {
             dataPort.print(F("SRQ:")); dataPort.print(i); dataPort.print(F(",")); dataPort.println(sb, DEC);
+            // Exit on first device to respond
             i = j;
           }
         } else {
@@ -1701,8 +1678,9 @@ void spoll_h(char *params) {
             dataPort.print(F("Received status byte ["));
             dataPort.print(sb);
             dataPort.print(F("] from device at address: "));
-            dataPort.println(val);
+            dataPort.println(addrval);
           }
+          // Exit on first device to respond
           i = j;
         }
       } else {
@@ -1790,14 +1768,17 @@ void save_h() {
 
 /***** Show state or enable/disable listen only mode *****/
 void lon_h(char *params) {
-  uint16_t val;
+  uint16_t lval;
   if (params != NULL) {
-    if (notInRange(params, 0, 1, val)) return;
-    isRO = val ? true : false;
-    if (isTO) isTO = false; // Talk-only mode must be disabled!
+    if (notInRange(params, 0, 1, lval)) return;
+    isRO = lval ? true : false;
+    if (isRO) {
+      isTO = 0;       // Talk-only mode must be disabled!
+      isProm = false; // Promiscuous mode must be disabled!
+    }
     if (isVerb) {
       dataPort.print(F("LON: "));
-      dataPort.println(val ? "ON" : "OFF") ;
+      dataPort.println(lval ? "ON" : "OFF") ;
     }
   } else {
     dataPort.println(isRO);
@@ -1986,18 +1967,52 @@ void setvstr_h(char *params) {
 }
 
 
-/***** Talk only mode *****/
-void ton_h(char *params) {
-  uint16_t val;
+/***** Show state or enable/disable promiscuous mode *****/
+void prom_h(char *params) {
+  uint16_t pval;
   if (params != NULL) {
-    if (notInRange(params, 0, 1, val)) return;
-    isTO = val ? true : false;
-    if (isTO) isRO = false; // Read-only mode must be disabled in TO mode!
+    if (notInRange(params, 0, 1, pval)) return;
+    isProm = pval ? true : false;
+    if (isProm) {
+      isTO = 0;     // Talk-only mode must be disabled!
+      isRO = false; // Listen-only mode must be disabled!
+    }
     if (isVerb) {
-      dataPort.print(F("TON: "));
-      dataPort.println(val ? "ON" : "OFF") ;
+      dataPort.print(F("PROM: "));
+      dataPort.println(pval ? "ON" : "OFF") ;
     }
   } else {
+    dataPort.println(isProm);
+  }
+}
+
+
+
+/***** Talk only mode *****/
+void ton_h(char *params) {
+  uint16_t toval;
+  if (params != NULL) {
+    if (notInRange(params, 0, 2, toval)) return;
+//    isTO = val ? true : false;
+    isTO = (uint8_t)toval;
+    if (isTO>0) {
+      isRO = false;   // Read-only mode must be disabled in TO mode!
+      isProm = false; // Promiscuous mode must be disabled in TO mode!
+    }
+  }else{
+    if (isVerb) {
+      dataPort.print(F("TON: "));
+      switch (isTO) {
+        case 1:
+          dataPort.println(F("ON unbuffered"));
+          break;
+        case 2:
+          dataPort.println(F("ON buffered"));
+          break;
+        default:
+          dataPort.println(F("OFF"));
+      }
+    }
     dataPort.println(isTO);
   }
 }
@@ -2106,11 +2121,13 @@ void macro_h(char *params) {
  * mode: 0=data bus; 1=control bus
  * byte: byte to write on the bus
  * Note: values to switch individual bits = 1,2,4,8,10,20,40,80
+ * States revert to controller or device mode after 10 seconds
+ * Databus reverts to 0 (all HIGH) after 10 seconds
  */
 void xdiag_h(char *params){
   char *param;
   uint8_t mode = 0;
-  uint8_t val = 0;
+  uint8_t byteval = 0;
   
   // Get first parameter (mode = 0 or 1)
   param = strtok(params, " \t");
@@ -2127,21 +2144,21 @@ void xdiag_h(char *params){
   param = strtok(NULL, " \t");
   if (param != NULL) {
     if (strlen(param)<4){
-      val = atoi(param);
+      byteval = atoi(param);
     }
 
     switch (mode) {
       case 0:
           // Set to required value
-          gpibBus.setDataVal(val);
+          gpibBus.setDataVal(byteval);
           // Reset after 10 seconds
           delay(10000);
           gpibBus.setDataVal(0);
           break;
       case 1:
           // Set to required state
-          gpibBus.setControlVal(0xFF, 0xFF, 1);  // Set direction
-          gpibBus.setControlVal(~val, 0xFF, 0);  // Set state (low=asserted so must be inverse of value)
+          gpibBus.setControlVal(0xFF, 0xFF, 1);  // Set direction (all pins as outputs)
+          gpibBus.setControlVal(~byteval, 0xFF, 0);  // Set state (asserted=LOW so must invert value)
           // Reset after 10 seconds
           delay(10000);
           if (gpibBus.cfg.cmode==2) {
@@ -2150,21 +2167,8 @@ void xdiag_h(char *params){
             gpibBus.setControls(DINI);
           }
           break;
-#ifdef AR488_MCP23S17
-      case 2:
-        // MCP23S17 direction
-        mcpByteWrite(MCPDIRA, 0b00000000);  // Port direction: 0 = output; 1 = input;
-        mcpByteWrite(MCPPORTA, val);
-        break;
-#endif
     }
-/*
-    if (mode) {   // Control bus
 
-    }else{        // Data bus
-
-    }
-*/
   }
 
 }
@@ -2187,23 +2191,6 @@ void xonxoff_h(char *params){
 }
 */
 
-
-/****** Timing parameters ******/
-/*
-void tmbus_h(char *params) {
-  uint16_t val;
-  if (params != NULL) {
-    if (notInRange(params, 0, 30000, val)) return;
-    AR488.tmbus = val;
-    if (isVerb) {
-      dataPort.print(F("TmBus set to: "));
-      dataPort.println(val);
-    };
-  } else {
-    dataPort.println(AR488.tmbus, DEC);
-  }
-}
-*/
 
 /***** Set device ID *****/
 /*
@@ -2394,7 +2381,7 @@ void attnRequired() {
   const uint8_t cmdbuflen = 35;
   uint8_t cmdbytes[5] = {0};
   uint8_t db = 0;
-  uint8_t stat = 0;
+//  uint8_t rstat = 0;
   bool eoiDetected = false;
   uint8_t gpibcmd = 0;
   uint8_t bytecnt = 0;
@@ -2415,37 +2402,64 @@ void attnRequired() {
   gpibBus.setControls(DLAS);
 
   /***** ATN read loop *****/
-
-  // Read bytes
-  while ( (gpibBus.isAsserted(ATN)) && (bytecnt<cmdbuflen)  && (stat==0) ) {
+  // Read bytes received while ATN is asserted
+  while ( (gpibBus.isAsserted(ATN)) && (bytecnt<cmdbuflen) ) {
     // Read the next byte from the bus, no EOI detection
-    stat = gpibBus.readByte(&db, false, &eoiDetected);
-    if (!stat) {
-      // Untalk or unlisten
-      if ( (db == 0x5F) || (db == 0x3F) ) {
-        if (db == 0x3F) {
-          if (device_unl_h()) ustat |= 0x01;
-        }
-        if (db == 0x5F) {
-          if (device_unt_h()) ustat |= 0x02; 
-        }
-      // Other command
-      }else{
+    if (gpibBus.readByte(&db, false, &eoiDetected) > 0 ) break;
+    // Untalk or unlisten
+/*    
+
+    if ( (db == 0x5F) || (db == 0x3F) ) {
+    
+      if (db == 0x3F) {
+        if (device_unl_h()) ustat |= 0x01;
+      }
+      if (db == 0x5F) {
+        if (device_unt_h()) ustat |= 0x02; 
+      }
+*/
+    switch (db) {
+      case 0x3F:  
+        ustat |= 0x01;
+        break;
+      case 0x5F:
+        ustat |= 0x02;
+        break;
+      default:
         cmdbytes[bytecnt] = db;
         bytecnt++;
-      }
-#ifdef DEBUG_DEVICE_ATN
-      cmdbyteslist[listbytecnt] = db;
-      listbytecnt++;
-#endif
     }
+#ifdef DEBUG_DEVICE_ATN
+    cmdbyteslist[listbytecnt] = db;
+    listbytecnt++;
+#endif
   }
 
+  // ATN read loop completed
   atnstat |= 0x01;
 
-  /***** Command process loop *****/
 
-  if (bytecnt>0) {  // Some command tokens to process
+  /***** Promiscuous mode *****/
+  // Don't process anything, just listen and repeat to USB
+  if (isProm) {
+    device_listen_h();
+    gpibBus.setControls(DINI);
+    return;
+  }
+
+  /***** Try to unlisten bus *****/
+  if (ustat & 0x01) {
+    if (!device_unl_h()) ustat &= 0x01; // Clears bit if UNL was not required
+  }
+
+  /***** Try to untalk bus *****/
+  if (ustat & 0x01) {
+    if (!device_unt_h()) ustat &= 0x02; // Clears bit if UNT was not required
+  }
+
+  /***** Command process loop *****/
+  // Process received addresses and command tokens
+  if (bytecnt>0) {
 
     // Process received command tokens
     for (uint8_t i=0; i<bytecnt; i++) { 
@@ -2470,83 +2484,96 @@ void attnRequired() {
 #ifdef EN_STORAGE
       }else if (db>0x5F && db<0x80) {
         // Secondary addressing command received
-        if (addressed) { // If we have been addressed (talk or listen)
-          saddrcmd = db;
-          atnstat |= 0x10;
-        }
+        saddrcmd = db;
+        atnstat |= 0x10;
 #endif
 
       }else if (db<0x20){
         // Primary command received
-        if (addressed) { // If we have been addressed (talk or listen)
-          gpibcmd = db;
-          atnstat |= 0x08;
-        }
+        gpibcmd = db;
+        atnstat |= 0x08;
       }
     }   // End for
 
-    // If we have not been adressed then back to idle and exit loop
-    if (!addressed) {
-      gpibBus.setControls(DINI);      
-      return;
-    }
+  } // ATN bytes processed
 
-    // If we have been adressed, then execute commands
+  
+  /***** If we have not been adressed then back to idle and exit loop *****/
+  if (!addressed) {
+    gpibBus.setControls(DINI);
+#ifdef DEBUG_DEVICE_ATN
+    showATNStatus(atnstat, ustat, cmdbyteslist, listbytecnt);
+#endif
+    return;
+  }
 
-    /***** Perform GPIB primary command actions *****/
+  /***** If addressed, then perform the appropriate actions *****/
+  if (addressed) {
+
+    // If we have a primary GPIB command then execute it
     if (gpibcmd) {
       // Respond to GPIB command
       execGpibCmd(gpibcmd);
       // Clear flags
       gpibcmd = 0;
       atnstat |= 0x20;
+#ifdef DEBUG_DEVICE_ATN
+      showATNStatus(atnstat, ustat, cmdbyteslist, listbytecnt);
+#endif
+      return;      
     }
 
-    /***** Perform GPIB secondry address command actions *****/
 #ifdef EN_STORAGE
-    if (saddrcmd) {
+    // If we have a secondary address then perform secondary GPIB command actions *****/
+    if (addressed && saddrcmd) {
       // Execute the GPIB secondary addressing command
       storage.storeExecCmd(saddrcmd);
       // Clear secondary address command
       saddrcmd = 0;
       atnstat |= 0x40;
+  #ifdef DEBUG_DEVICE_ATN
+      showATNStatus(atnstat, ustat, cmdbyteslist, listbytecnt, rstat);
+  #endif
+      return;
     }
 #endif
 
-    /***** Otherwise perform controller mode read or write *****/
-    if (gpibBus.cfg.cmode == 2) { 
-
-      // Listen for data
-      if (gpibBus.isDeviceAddressedToListen()) {
-        device_listen_h();
-        atnstat |= 0x80;
-      }
-
-      // Talk (send data)
-      if (gpibBus.isDeviceAddressedToTalk()) {
-        device_talk_h();
-        atnstat |= 0x80;
-          
-      }
-
-    }  // End mode = 2
-
+    // If no GPIB commands but addressed to listen then just listen
+    if (gpibBus.isDeviceAddressedToListen()) {
+      device_listen_h();
+      atnstat |= 0x80;
+      gpibBus.setControls(DIDS);
 #ifdef DEBUG_DEVICE_ATN
-  }else{
-    DB_PRINT(F("No command to process!"),"");
+      DB_PRINT(F("Listen done."),"");
+      showATNStatus(atnstat, ustat, cmdbyteslist, listbytecnt);
 #endif
+      return;
+    }
+  
+    // If no GPIB commands but addressed to talk then send data
+    if (gpibBus.isDeviceAddressedToTalk()) {
+      device_talk_h();
+      atnstat |= 0x80;
+      gpibBus.setControls(DIDS);
+#ifdef DEBUG_DEVICE_ATN
+      DB_PRINT(F("Talk done."),"");
+      showATNStatus(atnstat, ustat, cmdbyteslist, listbytecnt);
+#endif
+      return;
+    }
+
   }
 
 #ifdef DEBUG_DEVICE_ATN
-  showATNStatus(atnstat, ustat, cmdbyteslist, listbytecnt, stat);
-  DB_PRINT(F("END attnReceived.\n\n"),"");
+  DB_PRINT(F("ATN: Nothing to process!"),"");
+  showATNStatus(atnstat, ustat, cmdbyteslist, listbytecnt);
 #endif
 
 }
 
 
 #ifdef DEBUG_DEVICE_ATN
-void showATNStatus(uint8_t atnstat, uint8_t ustat, uint8_t atnbytes[], size_t bcnt, uint8_t stat) {
+void showATNStatus(uint8_t atnstat, uint8_t ustat, uint8_t atnbytes[], size_t bcnt) {
 
   if (ustat & 0x01) DB_PRINT(F("unlistened."),"");
   if (ustat & 0x02) DB_PRINT(F("untalked."),"");
@@ -2558,18 +2585,13 @@ void showATNStatus(uint8_t atnstat, uint8_t ustat, uint8_t atnbytes[], size_t bc
   if (atnstat & 0x10) DB_PRINT(F("secondary command received."),"");
   if (atnstat & 0x20) DB_PRINT(F("primary command done."),"");
   if (atnstat & 0x40) DB_PRINT(F("secondary command done."),"");
-  if (atnstat & 0x80) DB_PRINT(F("done."),"");
-/*
-  debugStream.println(F("attnRequired: commands received:"));
-  for (uint8_t i=0; i<bcnt; i++) {
-    debugStream.println(atnbytes[i], HEX);
-  }
-*/
-  DB_HEXA_PRINT(F("commands received"), atnbytes, bcnt);
+  if (atnstat & 0x80) DB_PRINT(F("data transfer done."),"");
 
-  DB_PRINT(F("ATN loop end."),"");
-  DB_PRINT(bcnt,F("bytes read."));
-  DB_PRINT(F("Status: "),stat);
+  DB_HEXA_PRINT(F("ATN bytes received: "), atnbytes, bcnt);
+  DB_PRINT(bcnt,F(" ATN bytes read."));
+//  DB_PRINT(F("Error status: "),rstat);
+
+  DB_PRINT(F("END attnReceived.\n\n"),"");
 
 }
 #endif
@@ -2629,7 +2651,13 @@ void device_listen_h(){
 
 /***** Device is addressed to talk - so send data *****/
 void device_talk_h(){
-  if (lnRdy == 2) sendToInstrument(pBuf, pbPtr);
+  DB_PRINT("LnRdy: ", lnRdy);
+  DB_PRINT("Buffer: ", pBuf);
+//  if (lnRdy == 2) sendToInstrument(pBuf, pbPtr);
+  if (lnRdy == 2) gpibBus.sendData(pBuf, pbPtr);
+  // Flush the parse buffer and clear line ready flag
+  flushPbuf();
+  lnRdy = 0;
 }
 
 
@@ -2639,7 +2667,6 @@ void device_sdc_h() {
   if (isVerb) dataPort.println(F("Resetting..."));
 #ifdef DEBUG_DEVICE_ATN
   DB_PRINT(F("Reset adressed to me: "),"");
-//  debugStream.println(aTl);
 #endif
   rst_h();
   if (isVerb) dataPort.println(F("Reset failed."));
@@ -2720,8 +2747,78 @@ void device_gtl_h(){
 
 void lonMode(){
 
-  gpibBus.receiveData(dataPort, false, false, 0);
+  uint8_t db = 0;
+  uint8_t r = 0;
+  bool eoiDetected = false;
 
-  // Clear the buffer to prevent it getting blocked
-  if (lnRdy==2) flushPbuf();
+  // Set bus for device read mode
+  gpibBus.setControls(DLAS);
+
+  while (isRO) {
+
+    r = gpibBus.readByte(&db, false, &eoiDetected);
+    if (r == 0) dataPort.write(db);
+
+    // Check whether there are charaters waiting in the serial input buffer and call handler
+    if (dataPort.available()) {
+
+      lnRdy = serialIn_h();
+
+      // We have a command return to main loop and execute it
+      if (lnRdy==1) break;
+
+      // Clear the buffer to prevent it getting blocked
+      if (lnRdy==2) flushPbuf();
+
+    }
+
+  }
+
+  // Set bus to idle
+  gpibBus.setControls(DIDS);
+
+}
+
+
+/***** Talk only mpode *****/
+void tonMode(){
+
+  // Set bus for device read mode
+  gpibBus.setControls(DTAS);
+
+  while (isTO>0) {
+
+    // Check whether there are charaters waiting in the serial input buffer and call handler
+    if (dataPort.available()) {
+
+      if (isTO == 1) {
+        // Unbuffered version
+        gpibBus.writeByte(dataPort.read(), false);
+      }
+
+      if (isTO == 2) {
+        
+        // Buffered version
+        lnRdy = serialIn_h();
+
+        // We have a command return to main loop and execute it
+        if (lnRdy==1) break;
+
+        // Otherwise send the buffered data
+        if (lnRdy==2) {
+          for (uint8_t i=0; i<pbPtr; i++){
+            gpibBus.writeByte(pBuf[i], false);  // False = No EOI
+          }
+          flushPbuf();
+        }
+        
+      }
+
+    }
+
+  }
+
+  // Set bus to idle
+  gpibBus.setControls(DIDS);
+
 }
