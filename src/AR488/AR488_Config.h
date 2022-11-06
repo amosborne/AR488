@@ -24,7 +24,7 @@
 /*
  * Uncomment to use custom board layout
  */
-//#define AR488_CUSTOM
+#define AR488_CUSTOM
 
 /*
  * Configure the appropriate board/layout section
@@ -42,8 +42,8 @@
 /*** UNO and NANO boards ***/
 #elif __AVR_ATmega328P__
   /* Board/layout selection */
-  #define AR488_UNO
-  //#define AR488_NANO
+  //#define AR488_UNO
+  #define AR488_NANO
   //#define AR488_MCP23S17
   //#define AR488_MCP23017
 
@@ -155,14 +155,14 @@
  * This will require the use of an additional GPIO pin to control
  * the read and write modes of the ICs.
  */
-//#define SN7516X
+#define SN7516X
 #ifdef SN7516X
-//  #define SN7516X_TE 6
-//  #define SN7516X_DC 13
+  #define SN7516X_TE 6
+  #define SN7516X_DC 13
 //  #define SN7516X_SC 12
   // ONLYA board
-  #define SN7516X_TE 13
-  #define SN7516X_DC 5
+//  #define SN7516X_TE 13
+//  #define SN7516X_DC 5
 #endif
 
 
@@ -267,10 +267,10 @@
 
 #define DIO1  A0  /* GPIB 1  */
 #define DIO2  A1  /* GPIB 2  */
-#define DIO3  A2  /* GPIB 3  */
-#define DIO4  A3  /* GPIB 4  */
-#define DIO5  A4  /* GPIB 13 */
-#define DIO6  A5  /* GPIB 14 */
+#define DIO3  A5  /* GPIB 3  */
+#define DIO4  A4  /* GPIB 4  */
+#define DIO5  A3  /* GPIB 13 */
+#define DIO6  A2  /* GPIB 14 */
 #define DIO7  4   /* GPIB 15 */
 #define DIO8  5   /* GPIB 16 */
 
